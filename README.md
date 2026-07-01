@@ -161,6 +161,7 @@ macOS 上会注册为 `launchd` 任务 `com.codex-feishu-bridge`。其他系统�
 ## 聊天命令
 
 - `/new` 或 `/reset`：清空当前 chat 绑定的 Codex session
+- `/cancel`、`/stop`、`/interrupt`、`取消`、`停止` 或 `中断`：中断当前 chat 正在执行的 Codex 任务
 - `/status`：查看当前 chat 绑定的 session id
 - `/help`：查看内置帮助
 

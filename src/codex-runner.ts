@@ -18,9 +18,17 @@ export interface CodexTurnHooks {
 
 export interface CodexBridge {
   isBusy(chatId: string): boolean;
+  interrupt(chatId: string): boolean;
   reset(chatId: string): void;
   getSessionId(chatId: string): string | undefined;
   runTurn(chatId: string, prompt: string, hooks?: CodexTurnHooks): Promise<CodexTurnResult>;
+}
+
+export class CodexInterruptedError extends Error {
+  constructor(message = 'Codex turn was interrupted by remote command.') {
+    super(message);
+    this.name = 'CodexInterruptedError';
+  }
 }
 
 export class NoEventTimeoutError extends Error {
@@ -34,8 +42,13 @@ export function buildBridgePrompt(prompt: string): string {
   return `${BRIDGE_INSTRUCTION}\n\nUser message:\n${prompt}`;
 }
 
+export function isCodexInterruptedError(error: unknown): boolean {
+  return error instanceof CodexInterruptedError;
+}
+
 export function shouldRetryFresh(error: unknown): boolean {
   if (error instanceof NoEventTimeoutError) return true;
+  if (error instanceof CodexInterruptedError) return false;
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return (
     message.includes('resume') ||

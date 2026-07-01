@@ -1,10 +1,11 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import readline from 'node:readline';
 
 import type { Config } from './config.js';
 import {
   buildBridgePrompt,
   type CodexBridge,
+  CodexInterruptedError,
   type CodexTurnHooks,
   type CodexTurnResult,
   NoEventTimeoutError,
@@ -26,6 +27,10 @@ export class CodexCliBridge implements CodexBridge {
   private readonly config: Config;
   private readonly store: StateStore;
   private readonly chains = new Map<string, Promise<unknown>>();
+  private readonly activeTurns = new Map<string, {
+    child: ChildProcessWithoutNullStreams;
+    interrupted: boolean;
+  }>();
 
   constructor(config: Config, store: StateStore) {
     this.config = config;
@@ -34,6 +39,19 @@ export class CodexCliBridge implements CodexBridge {
 
   isBusy(chatId: string): boolean {
     return this.chains.has(chatId);
+  }
+
+  interrupt(chatId: string): boolean {
+    const active = this.activeTurns.get(chatId);
+    if (!active) return false;
+    active.interrupted = true;
+    active.child.kill('SIGTERM');
+    setTimeout(() => {
+      if (!active.child.killed) {
+        active.child.kill('SIGKILL');
+      }
+    }, 5_000).unref();
+    return true;
   }
 
   reset(chatId: string): void {
@@ -48,14 +66,14 @@ export class CodexCliBridge implements CodexBridge {
     return this.enqueue(chatId, async () => {
       const savedSessionId = this.store.getSessionId(chatId) || this.config.defaultSessionId;
       try {
-        const result = await this.invoke(prompt, savedSessionId, hooks);
+        const result = await this.invoke(chatId, prompt, savedSessionId, hooks);
         this.store.setSessionId(chatId, result.sessionId);
         return result;
       } catch (error) {
         if (savedSessionId && shouldRetryFresh(error)) {
           console.warn('[bridge] Resume failed, retrying fresh session for chat', chatId);
           this.store.clearSession(chatId);
-          const result = await this.invoke(prompt, undefined, hooks);
+          const result = await this.invoke(chatId, prompt, undefined, hooks);
           this.store.setSessionId(chatId, result.sessionId);
           return result;
         }
@@ -76,7 +94,7 @@ export class CodexCliBridge implements CodexBridge {
     return current;
   }
 
-  private invoke(prompt: string, sessionId?: string, hooks: CodexTurnHooks = {}): Promise<CodexTurnResult> {
+  private invoke(chatId: string, prompt: string, sessionId?: string, hooks: CodexTurnHooks = {}): Promise<CodexTurnResult> {
     const resumed = Boolean(sessionId);
     const args = sessionId
       ? ['exec', 'resume', '--json', '--skip-git-repo-check']
@@ -106,6 +124,8 @@ export class CodexCliBridge implements CodexBridge {
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      const activeTurn = { child, interrupted: false };
+      this.activeTurns.set(chatId, activeTurn);
 
       let activeSessionId = sessionId;
       let sawCompletion = false;
@@ -119,6 +139,9 @@ export class CodexCliBridge implements CodexBridge {
         settled = true;
         clearTimeout(noEventTimer);
         clearTimeout(hardTimer);
+        if (this.activeTurns.get(chatId) === activeTurn) {
+          this.activeTurns.delete(chatId);
+        }
         reject(error);
       };
 
@@ -127,6 +150,9 @@ export class CodexCliBridge implements CodexBridge {
         settled = true;
         clearTimeout(noEventTimer);
         clearTimeout(hardTimer);
+        if (this.activeTurns.get(chatId) === activeTurn) {
+          this.activeTurns.delete(chatId);
+        }
         if (!activeSessionId) {
           reject(new Error('Codex did not return a session id.'));
           return;
@@ -228,6 +254,10 @@ export class CodexCliBridge implements CodexBridge {
 
       child.on('close', (code) => {
         if (settled) return;
+        if (activeTurn.interrupted) {
+          fail(new CodexInterruptedError());
+          return;
+        }
         if (code !== 0) {
           fail(new Error(stderrLines.join('\n') || `Codex exited with code ${code}`));
           return;

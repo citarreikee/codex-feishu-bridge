@@ -4,6 +4,7 @@ import type { Config } from './config.js';
 import {
   buildBridgePrompt,
   type CodexBridge,
+  CodexInterruptedError,
   type CodexTurnHooks,
   type CodexTurnResult,
   NoEventTimeoutError,
@@ -16,6 +17,10 @@ export class CodexSdkBridge implements CodexBridge {
   private readonly store: StateStore;
   private readonly codex: Codex;
   private readonly chains = new Map<string, Promise<unknown>>();
+  private readonly activeTurns = new Map<string, {
+    controller: AbortController;
+    reason?: 'remote-interrupt' | 'no-event-timeout' | 'hard-timeout';
+  }>();
 
   constructor(config: Config, store: StateStore) {
     this.config = config;
@@ -31,6 +36,16 @@ export class CodexSdkBridge implements CodexBridge {
     return this.chains.has(chatId);
   }
 
+  interrupt(chatId: string): boolean {
+    const active = this.activeTurns.get(chatId);
+    if (!active) return false;
+    active.reason = 'remote-interrupt';
+    if (!active.controller.signal.aborted) {
+      active.controller.abort();
+    }
+    return true;
+  }
+
   reset(chatId: string): void {
     this.store.clearSession(chatId);
   }
@@ -43,14 +58,14 @@ export class CodexSdkBridge implements CodexBridge {
     return this.enqueue(chatId, async () => {
       const savedSessionId = this.store.getSessionId(chatId) || this.config.defaultSessionId;
       try {
-        const result = await this.invoke(prompt, savedSessionId, hooks);
+        const result = await this.invoke(chatId, prompt, savedSessionId, hooks);
         this.store.setSessionId(chatId, result.sessionId);
         return result;
       } catch (error) {
         if (savedSessionId && shouldRetryFresh(error)) {
           console.warn('[bridge] SDK resume failed, retrying fresh thread for chat', chatId);
           this.store.clearSession(chatId);
-          const result = await this.invoke(prompt, undefined, hooks);
+          const result = await this.invoke(chatId, prompt, undefined, hooks);
           this.store.setSessionId(chatId, result.sessionId);
           return result;
         }
@@ -71,9 +86,14 @@ export class CodexSdkBridge implements CodexBridge {
     return current;
   }
 
-  private async invoke(prompt: string, sessionId?: string, hooks: CodexTurnHooks = {}): Promise<CodexTurnResult> {
+  private async invoke(chatId: string, prompt: string, sessionId?: string, hooks: CodexTurnHooks = {}): Promise<CodexTurnResult> {
     const resumed = Boolean(sessionId);
     const controller = new AbortController();
+    const activeTurn = { controller } as {
+      controller: AbortController;
+      reason?: 'remote-interrupt' | 'no-event-timeout' | 'hard-timeout';
+    };
+    this.activeTurns.set(chatId, activeTurn);
     const threadOptions = this.buildThreadOptions();
     const thread = sessionId
       ? this.codex.resumeThread(sessionId, threadOptions)
@@ -85,7 +105,6 @@ export class CodexSdkBridge implements CodexBridge {
     let messageCount = 0;
     let noEventTimer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
-    let timeoutReason: 'no-event' | 'hard' | undefined;
 
     const clearTimers = (): void => {
       if (noEventTimer) clearTimeout(noEventTimer);
@@ -102,7 +121,7 @@ export class CodexSdkBridge implements CodexBridge {
     const resetNoEventTimeout = (): void => {
       if (noEventTimer) clearTimeout(noEventTimer);
       noEventTimer = setTimeout(() => {
-        timeoutReason = 'no-event';
+        activeTurn.reason = 'no-event-timeout';
         if (!controller.signal.aborted) {
           controller.abort();
         }
@@ -111,7 +130,7 @@ export class CodexSdkBridge implements CodexBridge {
     };
 
     const hardTimer = setTimeout(() => {
-      timeoutReason = 'hard';
+      activeTurn.reason = 'hard-timeout';
       if (!controller.signal.aborted) {
         controller.abort();
       }
@@ -161,12 +180,20 @@ export class CodexSdkBridge implements CodexBridge {
     } catch (error) {
       clearTimers();
       if (!settled && controller.signal.aborted) {
-        const message = timeoutReason === 'hard'
+        if (activeTurn.reason === 'remote-interrupt') {
+          fail(new CodexInterruptedError());
+        }
+        const message = activeTurn.reason === 'hard-timeout'
           ? `Codex SDK exceeded hard timeout of ${this.config.hardTimeoutMs}ms.`
           : `Codex SDK produced no events for ${this.config.noEventTimeoutMs}ms.`;
         fail(new NoEventTimeoutError(message));
       }
       throw error;
+    } finally {
+      clearTimers();
+      if (this.activeTurns.get(chatId) === activeTurn) {
+        this.activeTurns.delete(chatId);
+      }
     }
   }
 

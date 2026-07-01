@@ -1,6 +1,6 @@
 import { createCodexBridge } from './codex.js';
 import { ensureBridgeDirs, loadConfig } from './config.js';
-import type { CodexBridge } from './codex-runner.js';
+import { isCodexInterruptedError, type CodexBridge } from './codex-runner.js';
 import { FeishuBot } from './feishu-bot.js';
 import { StateStore } from './state-store.js';
 
@@ -68,6 +68,17 @@ async function handleInbound(
   const { chatId, text } = inbound;
   const trimmed = text.trim();
 
+  if (isInterruptCommand(trimmed)) {
+    const interrupted = codex.interrupt(chatId);
+    await feishu.sendText(
+      chatId,
+      interrupted
+        ? '已请求中断当前 Codex 执行。'
+        : '当前 chat 没有正在执行的 Codex 任务。',
+    );
+    return;
+  }
+
   if (trimmed === '/new' || trimmed === '/reset') {
     codex.reset(chatId);
     await feishu.sendText(chatId, '已清空当前 chat 绑定的 Codex 会话，下条消息会新开会话。');
@@ -91,6 +102,7 @@ async function handleInbound(
       [
         '这是一个轻量 Feishu <-> Codex 桥接。',
         '/new 或 /reset: 清空当前 chat 的 Codex 会话',
+        '/cancel、/stop 或 /interrupt: 中断当前正在执行的 Codex 任务',
         '/status: 查看当前 chat 绑定的会话 id',
       ].join('\n'),
     );
@@ -99,14 +111,23 @@ async function handleInbound(
 
   await feishu.onMessageStart(chatId);
   try {
-    const result = await codex.runTurn(chatId, trimmed, {
-      onAssistantMessage: async (message) => {
-        await feishu.sendText(chatId, message);
-      },
-      onFinal: async () => {
-        await feishu.sendText(chatId, FINAL_REPLY_MARKER);
-      },
-    });
+    let result;
+    try {
+      result = await codex.runTurn(chatId, trimmed, {
+        onAssistantMessage: async (message) => {
+          await feishu.sendText(chatId, message);
+        },
+        onFinal: async () => {
+          await feishu.sendText(chatId, FINAL_REPLY_MARKER);
+        },
+      });
+    } catch (error) {
+      if (isCodexInterruptedError(error)) {
+        await feishu.sendText(chatId, '当前 Codex 执行已中断。');
+        return;
+      }
+      throw error;
+    }
     if (result.messageCount === 0) {
       await feishu.sendText(chatId, '(Codex 本轮没有返回文本输出)');
       await feishu.sendText(chatId, FINAL_REPLY_MARKER);
@@ -116,7 +137,17 @@ async function handleInbound(
   }
 }
 
+function isInterruptCommand(text: string): boolean {
+  return text === '/cancel'
+    || text === '/stop'
+    || text === '/interrupt'
+    || text === '取消'
+    || text === '停止'
+    || text === '中断';
+}
+
 function toUserError(error: unknown): string {
+  if (isCodexInterruptedError(error)) return '当前 Codex 执行已中断。';
   if (error instanceof Error) return error.message;
   return String(error);
 }
