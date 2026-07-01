@@ -1,15 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 
 import type { Config } from './config.js';
-import {
-  appendAttachmentContext,
-  downloadAttachments,
-  parseDirectAttachment,
-  parsePostAttachments,
-  sendOutboxFiles,
-  type PendingAttachment,
-  type SavedAttachment,
-} from './file-transfer.js';
 
 export interface InboundMessage {
   messageId: string;
@@ -17,7 +8,6 @@ export interface InboundMessage {
   userId: string;
   chatType: 'p2p' | 'group';
   text: string;
-  attachments: SavedAttachment[];
 }
 
 type FeishuMessageEventData = {
@@ -49,7 +39,6 @@ type FeishuMessageEventData = {
 
 const DEDUP_MAX = 1000;
 const TYPING_EMOJI = 'Typing';
-type CardTone = 'info' | 'success' | 'warning' | 'danger';
 
 export class FeishuBot {
   private readonly config: Config;
@@ -131,70 +120,6 @@ export class FeishuBot {
     }
   }
 
-  async sendAssistantCard(chatId: string, text: string): Promise<void> {
-    if (!this.config.feishuUseCards) {
-      await this.sendText(chatId, text);
-      return;
-    }
-
-    const chunks = splitMessage(text, this.config.replyMaxChars);
-    for (const chunk of chunks) {
-      await this.sendCardWithFallback(chatId, makeMessageCard('Codex', chunk, 'info'));
-    }
-  }
-
-  async sendStatusCard(chatId: string, title: string, text: string, tone: CardTone = 'info'): Promise<void> {
-    if (!this.config.feishuUseCards) {
-      await this.sendText(chatId, `${title}\n${text}`);
-      return;
-    }
-    await this.sendCardWithFallback(chatId, makeMessageCard(title, text, tone));
-  }
-
-  async sendRunningStatus(chatId: string): Promise<void> {
-    if (!this.config.feishuUseCards) return;
-    await this.sendStatusCard(chatId, 'Codex Running', 'Request received. Codex is working on it.', 'warning');
-  }
-
-  async sendFinalMarker(chatId: string, marker: string): Promise<void> {
-    if (!this.config.feishuUseCards) {
-      await this.sendText(chatId, marker);
-      return;
-    }
-    await this.sendStatusCard(chatId, 'Final Answer', marker, 'success');
-  }
-
-  async sendPendingOutboxFiles(chatId: string): Promise<void> {
-    const result = await sendOutboxFiles(this.restClient, this.config, chatId);
-    if (result.sent > 0) {
-      console.log(`[bridge] Sent ${result.sent} outbox file(s) to chat ${chatId}`);
-    }
-    if (result.errors.length > 0) {
-      await this.sendStatusCard(
-        chatId,
-        'Outbox Send Failed',
-        result.errors.join('\n'),
-        'danger',
-      );
-    }
-  }
-
-  private async sendCardWithFallback(chatId: string, card: Record<string, unknown>): Promise<void> {
-    try {
-      await this.restClient.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(card),
-        },
-      });
-    } catch (error) {
-      console.warn('[bridge] Failed to send card, falling back to text:', error instanceof Error ? error.message : error);
-      await this.sendText(chatId, cardToPlainText(card));
-    }
-  }
-
   async onMessageStart(chatId: string): Promise<void> {
     const messageId = this.lastIncomingMessageId.get(chatId);
     if (!messageId) return;
@@ -227,7 +152,7 @@ export class FeishuBot {
         path: { message_id: messageId, reaction_id: reactionId },
       });
     } catch {
-      // Best effort.
+      // Best effort. If deletion fails, a stale typing reaction is less harmful than failing the turn.
     }
   }
 
@@ -274,29 +199,16 @@ export class FeishuBot {
     }
 
     let text = '';
-    let attachments: PendingAttachment[] = [];
     if (message.message_type === 'text') {
       text = this.parseTextContent(message.content, message.mentions);
     } else if (message.message_type === 'post') {
       text = this.parsePostContent(message.content);
-      attachments = parsePostAttachments(message.content);
-    } else if (['image', 'file', 'audio', 'media', 'video', 'sticker'].includes(message.message_type)) {
-      attachments = parseDirectAttachment(message.message_type, message.content);
-      text = attachmentFallbackText(message.message_type);
     } else {
-      await this.sendText(chatId, 'This bridge currently supports text, image, file, audio, and video messages.');
+      await this.sendText(chatId, '当前轻量桥接只支持文本消息。');
       return;
     }
 
     text = text.trim();
-    const downloadResult = await downloadAttachments(
-      this.restClient,
-      this.config,
-      message.message_id,
-      chatId,
-      attachments,
-    );
-    text = appendAttachmentContext(text, downloadResult.saved, downloadResult.errors).trim();
     if (!text) return;
 
     this.enqueue({
@@ -305,7 +217,6 @@ export class FeishuBot {
       userId,
       chatType: message.chat_type,
       text,
-      attachments: downloadResult.saved,
     });
   }
 
@@ -440,55 +351,6 @@ export class FeishuBot {
     };
     return tokenPayload.tenant_access_token;
   }
-}
-
-function attachmentFallbackText(messageType: string): string {
-  if (messageType === 'image') return 'User sent an image attachment.';
-  if (messageType === 'audio') return 'User sent an audio attachment.';
-  if (messageType === 'media' || messageType === 'video') return 'User sent a video/media attachment.';
-  if (messageType === 'sticker') return 'User sent a sticker attachment.';
-  return 'User sent a file attachment.';
-}
-
-function makeMessageCard(title: string, text: string, tone: CardTone): Record<string, unknown> {
-  return {
-    config: {
-      wide_screen_mode: true,
-      update_multi: true,
-    },
-    header: {
-      template: cardTemplate(tone),
-      title: {
-        tag: 'plain_text',
-        content: title,
-      },
-    },
-    elements: [
-      {
-        tag: 'markdown',
-        content: toFeishuMarkdown(text),
-      },
-    ],
-  };
-}
-
-function cardTemplate(tone: CardTone): string {
-  if (tone === 'success') return 'green';
-  if (tone === 'warning') return 'yellow';
-  if (tone === 'danger') return 'red';
-  return 'blue';
-}
-
-function toFeishuMarkdown(text: string): string {
-  return text.replace(/\r\n/g, '\n').trim() || '(empty)';
-}
-
-function cardToPlainText(card: Record<string, unknown>): string {
-  const header = card.header as { title?: { content?: string } } | undefined;
-  const elements = card.elements as Array<{ content?: string }> | undefined;
-  const title = header?.title?.content || 'Message';
-  const content = elements?.map((element) => element.content || '').filter(Boolean).join('\n\n') || '';
-  return `${title}\n${content}`.trim();
 }
 
 function splitMessage(text: string, maxChars: number): string[] {

@@ -1,181 +1,174 @@
 # Codex Feishu Bridge
 
-A lightweight bridge that lets a Feishu bot talk to your local Codex CLI.
+这是本机正在运行的 Codex 飞书桥接代码逻辑的源码快照。
 
-The bridge runs on your machine, receives Feishu messages through the official long connection API, forwards each message to `codex exec --json`, and sends Codex replies back into the same Feishu chat.
+它的职责很窄：Feishu bot 收到消息后，把文本转给本地 `codex exec` / `codex exec resume`，再把 Codex 的文本输出发回当前飞书 chat。
 
-## Quick Start
+## 设计边界
 
-1. Install Node.js 20+.
-2. Install and authenticate Codex CLI:
+- 每个 Feishu chat 只保存一个 `chatId -> Codex session/thread id` 绑定。
+- 桥接层不保存 assistant/tool transcript。
+- 上下文连续性由 Codex 自己的 session 管理。
+- 同一个 chat 串行处理，避免并发写乱同一个 Codex 会话。
+- 不做复杂 session replay。
+- 不做图片、文件、音频转发。
+- 不做 Feishu 卡片交互，只发送普通文本。
 
-```bash
-npm install -g @openai/codex
-codex login
-codex --version
-```
+## 运行机制
 
-3. Create a Feishu bot app:
-   - Enable bot capability.
-   - Subscribe to `im.message.receive_v1`.
-   - Enable event long connection mode.
-   - Grant message send, image/file upload, and message resource read permissions if you want file transfer.
-   - Publish the app after changing permissions or events.
-
-4. Run the bridge setup:
+新会话使用：
 
 ```bash
-git clone https://github.com/citarreikee/codex-feishu-bridge.git
-cd codex-feishu-bridge
-npm install
-npm run build
-node dist/cli.mjs setup --start
+codex exec --json --skip-git-repo-check -
 ```
 
-The setup wizard writes local config to:
+已有会话使用：
+
+```bash
+codex exec resume --json --skip-git-repo-check <session-id> -
+```
+
+用户消息通过 stdin 写入，并在前面追加桥接提示词：
+
+```text
+You are replying through a Feishu bridge.
+Anything you output as assistant text will be sent back into the current Feishu chat.
+Do not claim that you cannot send messages into the chat when the user is asking you to reply in chat.
+```
+
+桥接程序解析 Codex JSONL 事件：
+
+- `thread.started`：记录 Codex session/thread id
+- `item.completed` 且 `item.type === "agent_message"`：发送文本到飞书
+- `turn.completed`：本轮完成
+- `turn.failed`：本轮失败
+- `error`：按 Codex 临时错误处理，记录日志但不中断
+
+## 安装要求
+
+- Node.js 20+
+- npm
+- rsync
+- 本机已安装并可运行 `codex`
+- 本机 Codex 已登录或已配置可用认证
+- 飞书 bot 已开启长连接事件
+
+## 安装
+
+```bash
+bash scripts/install.sh
+```
+
+安装脚本会：
+
+- 复制项目到 `~/.local/share/codex-feishu-bridge/app`
+- 执行 `npm ci` / `npm install`
+- 构建 `dist/daemon.mjs`
+- 创建命令 `~/.local/bin/codex-feishu-bridge`
+- 首次运行时生成 `~/.codex-feishu-bridge/config.env`
+
+确保 `~/.local/bin` 在 PATH 中：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## 配置
+
+编辑：
 
 ```text
 ~/.codex-feishu-bridge/config.env
 ```
 
-Secrets stay on your machine. Do not commit or share this file.
-
-## Commands
-
-```bash
-node dist/cli.mjs setup
-node dist/cli.mjs setup --start
-node dist/cli.mjs start
-node dist/cli.mjs stop
-node dist/cli.mjs restart
-node dist/cli.mjs status
-node dist/cli.mjs logs 100
-node dist/cli.mjs run
-```
-
-Convenience wrappers are also included:
-
-```bash
-./codex-feishu-bridge start
-.\codex-feishu-bridge.ps1 start
-```
-
-## In-Chat Commands
-
-Send these to the Feishu bot:
-
-- `/help`
-- `/status`
-- `/new`
-- `/reset`
-
-The bridge keeps one Codex thread per Feishu chat. `/new` and `/reset` clear the thread binding for that chat.
-
-## Manual Config
-
-`setup` writes this automatically, but advanced users can edit:
-
-```text
-~/.codex-feishu-bridge/config.env
-```
-
-Common variables:
+最小配置：
 
 ```env
 CFB_FEISHU_APP_ID=cli_xxx
 CFB_FEISHU_APP_SECRET=xxx
+CFB_CODEX_WORKDIR=/path/to/workdir
+```
+
+常用配置：
+
+```env
 CFB_FEISHU_DOMAIN=feishu
+CFB_FEISHU_ALLOWED_USERS=
 CFB_FEISHU_REQUIRE_MENTION=true
-CFB_FEISHU_USE_CARDS=false
-
-CFB_CODEX_WORKDIR=/Users/yourname/project
-CFB_CODEX_EXECUTABLE=codex
+CFB_CODEX_EXECUTABLE=
+CFB_CODEX_FULL_ACCESS=true
 CFB_CODEX_MODEL=
-CFB_CODEX_SANDBOX=danger-full-access
-CFB_CODEX_APPROVAL_POLICY=never
-CFB_CODEX_SKIP_GIT_REPO_CHECK=true
-CFB_CODEX_BYPASS_APPROVALS_AND_SANDBOX=false
-CFB_CODEX_CONFIG_OVERRIDES=
+CFB_CODEX_SANDBOX=workspace-write
+CFB_DEFAULT_SESSION_ID=
+CFB_NO_EVENT_TIMEOUT_MS=600000
+CFB_HARD_TIMEOUT_MS=5400000
+CFB_REPLY_MAX_CHARS=3500
 ```
 
-By default, the bridge runs:
+说明：
+
+- `CFB_FEISHU_ALLOWED_USERS`：可选，用逗号分隔允许访问的 user open_id 或 chat_id。
+- `CFB_FEISHU_REQUIRE_MENTION=true`：群聊里要求 `@bot` 才响应。
+- `CFB_CODEX_EXECUTABLE`：显式指定 `codex` 可执行文件路径；留空则自动查找。
+- `CFB_CODEX_FULL_ACCESS=true`：传给 Codex `--dangerously-bypass-approvals-and-sandbox`。
+- `CFB_CODEX_MODEL`：可选，传给 Codex `-m`。
+- `CFB_CODEX_SANDBOX`：未开启 full access 时可用 `read-only`、`workspace-write` 或 `danger-full-access`。
+- `CFB_DEFAULT_SESSION_ID`：可选，让新 chat 默认接到一个已有 Codex session。
+
+## 启动与管理
 
 ```bash
-codex exec --json --color never -C "$CFB_CODEX_WORKDIR" --skip-git-repo-check --sandbox danger-full-access --ask-for-approval never "<message>"
+codex-feishu-bridge start
+codex-feishu-bridge status
+codex-feishu-bridge logs 100
+codex-feishu-bridge stop
 ```
 
-For an existing chat thread, it runs:
+macOS 上会注册为 `launchd` 任务 `com.codex-feishu-bridge`。其他系统使用后台 `nohup node dist/daemon.mjs`。
+
+## 飞书侧要求
+
+飞书应用至少需要：
+
+- 开启机器人能力
+- 发布应用
+- 订阅事件 `im.message.receive_v1`
+- 使用长连接模式
+- 允许发送消息
+
+## 聊天命令
+
+- `/new` 或 `/reset`：清空当前 chat 绑定的 Codex session
+- `/status`：查看当前 chat 绑定的 session id
+- `/help`：查看内置帮助
+
+## 本机当前部署形态
+
+本机当前运行的多个桥接实例使用同一套安装代码：
+
+```text
+C:\Users\citarreikee\.local\share\codex-feishu-bridge\app
+```
+
+通过不同 `CFB_HOME` 区分实例状态和配置，例如：
+
+```text
+C:\Users\citarreikee\.codex-feishu-bridge
+C:\Users\citarreikee\.codex-feishu-bridge-entroflow-current
+C:\Users\citarreikee\.codex-feishu-bridge-memoflow
+```
+
+这些 `CFB_HOME` 目录包含真实配置、日志和运行状态，不应提交到仓库。
+
+## 打包
 
 ```bash
-codex exec resume <thread-id> --json --color never -C "$CFB_CODEX_WORKDIR" "<message>"
+npm run package
 ```
 
-Leave `CFB_CODEX_MODEL` empty to use your Codex default model. Set it only when you want the bridge to pass `--model`.
-
-Use `CFB_CODEX_CONFIG_OVERRIDES` for comma-separated Codex `-c key=value` overrides.
-
-## File Transfer
-
-When a Feishu user sends an image, file, audio, or video message, the bridge downloads it locally and appends the file path to the Codex prompt.
-
-Default inbound path:
+输出：
 
 ```text
-~/.codex-feishu-bridge/data/attachments/<chat-id>/<message-id>/
+releases/codex-feishu-bridge-<version>.tar.gz
+releases/codex-feishu-bridge-<version>.zip
 ```
-
-To send files back to the current Feishu chat, Codex can write:
-
-```text
-~/.codex-feishu-bridge/outbox/<chat-id>/send.json
-```
-
-Manifest shape:
-
-```json
-{
-  "files": [
-    {
-      "path": "/absolute/path/to/report.pdf",
-      "caption": "Optional text sent before the file"
-    }
-  ]
-}
-```
-
-The bridge uploads each file after the Codex turn and renames the manifest to a `.sent` file. By default, outbound files are only allowed from `CFB_CODEX_WORKDIR` and the bridge outbox directory.
-
-## What It Can Do
-
-- Receive Feishu messages through official long connection events.
-- Forward each message to local Codex CLI.
-- Keep one Codex thread per Feishu chat.
-- Stream Codex agent messages back to Feishu.
-- Send plain text by default, with optional Feishu cards.
-- Download Feishu image/file/audio/video messages to local paths.
-- Send local files back when Codex writes an outbox manifest.
-
-## Troubleshooting
-
-If the bot does not reply, check:
-
-- The bridge is running: `node dist/cli.mjs status`.
-- Logs do not show auth errors: `node dist/cli.mjs logs 100`.
-- The Feishu app is published.
-- `im.message.receive_v1` is subscribed.
-- Long connection mode is enabled.
-- App ID and App Secret are correct.
-- The local machine can run `codex --version`.
-- Codex is logged in: `codex login`.
-
-## Security Notes
-
-- Never commit `~/.codex-feishu-bridge/config.env`.
-- Never share your Feishu App Secret or OpenAI credentials.
-- Treat the machine running this bridge as trusted.
-- `CFB_CODEX_SANDBOX=danger-full-access` and `CFB_CODEX_APPROVAL_POLICY=never` are convenient for a chat bridge but broad. Narrow them if you need stricter local controls.
-- Keep `CFB_FILE_SEND_ROOTS` narrow. Files outside those roots will not be uploaded to Feishu.
-
-## License
-
-Apache License 2.0. See `LICENSE` and `NOTICE`.

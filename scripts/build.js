@@ -1,19 +1,21 @@
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-  entryPoints: {
-    daemon: 'src/daemon.ts',
-    cli: 'src/cli.ts',
-  },
+  entryPoints: ['src/main.ts'],
   bundle: true,
   platform: 'node',
-  target: 'node20',
   format: 'esm',
-  outdir: 'dist',
-  external: ['@larksuiteoapi/node-sdk'],
-  sourcemap: true,
-  entryNames: '[name]',
-  outExtension: { '.js': '.mjs' },
+  target: 'node20',
+  outfile: 'dist/daemon.mjs',
+  external: [
+    '@larksuiteoapi/node-sdk',
+    'node:child_process',
+    'node:events',
+    'node:fs',
+    'node:os',
+    'node:path',
+    'node:readline',
+  ],
 });
 
-console.log('Build complete');
+console.log('Built dist/daemon.mjs');

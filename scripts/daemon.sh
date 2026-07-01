@@ -1,125 +1,187 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BRIDGE_HOME="${CFB_HOME:-$HOME/.codex-feishu-bridge}"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_DIR="$BRIDGE_HOME/runtime"
 LOG_DIR="$BRIDGE_HOME/logs"
 PID_FILE="$RUNTIME_DIR/bridge.pid"
 LOG_FILE="$LOG_DIR/bridge.log"
-ERR_FILE="$LOG_DIR/bridge.err.log"
-ENTRY_POINT="$REPO_ROOT/dist/daemon.mjs"
+LAUNCHD_LABEL="com.codex-feishu-bridge"
+LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
 
 ensure_dirs() {
-  mkdir -p "$BRIDGE_HOME/data" "$RUNTIME_DIR" "$LOG_DIR"
-}
-
-read_pid() {
-  if [[ -f "$PID_FILE" ]]; then
-    tr -d '[:space:]' < "$PID_FILE"
-  fi
-}
-
-get_bridge_pid() {
-  local pid
-  pid="$(read_pid || true)"
-  if [[ -z "${pid:-}" ]]; then
-    return 1
-  fi
-
-  if kill -0 "$pid" >/dev/null 2>&1; then
-    printf '%s\n' "$pid"
-    return 0
-  fi
-
-  rm -f "$PID_FILE"
-  return 1
+  mkdir -p "$BRIDGE_HOME"/data "$RUNTIME_DIR" "$LOG_DIR"
 }
 
 ensure_built() {
-  if [[ ! -f "$ENTRY_POINT" ]]; then
-    (cd "$REPO_ROOT" && npm run build)
+  if [ ! -f "$PROJECT_DIR/dist/daemon.mjs" ]; then
+    (cd "$PROJECT_DIR" && npm run build)
+    return
+  fi
+
+  local newest_src
+  newest_src=$(find "$PROJECT_DIR/src" "$PROJECT_DIR/scripts" -type f \( -name '*.ts' -o -name '*.js' \) -newer "$PROJECT_DIR/dist/daemon.mjs" | head -1 || true)
+  if [ -n "$newest_src" ]; then
+    (cd "$PROJECT_DIR" && npm run build)
   fi
 }
 
-start_bridge() {
-  ensure_dirs
-  ensure_built
-
-  if pid="$(get_bridge_pid)"; then
-    echo "Bridge already running (PID: $pid)"
-    return 0
-  fi
-
-  (
-    cd "$REPO_ROOT"
-    nohup node "$ENTRY_POINT" >>"$LOG_FILE" 2>>"$ERR_FILE" &
-    echo $! > "$PID_FILE"
-  )
-
-  sleep 1
-
-  if pid="$(get_bridge_pid)"; then
-    echo "Bridge started (PID: $pid)"
-    return 0
-  fi
-
-  echo "Bridge failed to start"
-  show_logs 50
-  return 1
+read_pid() {
+  [ -f "$PID_FILE" ] && cat "$PID_FILE" 2>/dev/null || true
 }
 
-stop_bridge() {
-  if ! pid="$(get_bridge_pid)"; then
-    echo "Bridge is not running"
-    return 0
-  fi
-
-  kill "$pid" >/dev/null 2>&1 || true
-  sleep 1
-  if kill -0 "$pid" >/dev/null 2>&1; then
-    kill -9 "$pid" >/dev/null 2>&1 || true
-  fi
-  rm -f "$PID_FILE"
-  echo "Bridge stopped"
+is_running() {
+  local pid
+  pid=$(read_pid)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-show_status() {
-  if pid="$(get_bridge_pid)"; then
-    echo "Bridge running (PID: $pid)"
-  else
-    echo "Bridge not running"
-  fi
+write_launchd_plist() {
+  local node_bin
+  local codex_bin
+  local launchd_path
+  node_bin="$(command -v node)"
+  codex_bin="$(command -v codex)"
+  launchd_path="$(dirname "$node_bin"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$LAUNCHD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>$LAUNCHD_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$node_bin</string>
+      <string>$PROJECT_DIR/dist/daemon.mjs</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>CFB_HOME</key>
+      <string>$BRIDGE_HOME</string>
+      <key>CFB_CODEX_EXECUTABLE</key>
+      <string>$codex_bin</string>
+      <key>PATH</key>
+      <string>$launchd_path</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$LOG_FILE</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_FILE</string>
+  </dict>
+</plist>
+EOF
 }
 
-show_logs() {
-  local lines="${1:-80}"
-  if [[ -f "$LOG_FILE" ]]; then
-    echo "== stdout =="
-    tail -n "$lines" "$LOG_FILE"
-  fi
-  if [[ -f "$ERR_FILE" ]]; then
-    echo "== stderr =="
-    tail -n "$lines" "$ERR_FILE"
-  fi
+launchd_print_pid() {
+  launchctl print "gui/$(id -u)/$LAUNCHD_LABEL" 2>/dev/null | awk '/pid = / { print $3; exit }'
 }
 
-command="${1:-help}"
-case "$command" in
+launchd_is_loaded() {
+  launchctl print "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1
+}
+
+case "${1:-help}" in
   start)
-    start_bridge
+    ensure_dirs
+    ensure_built
+    if [ "$(uname -s)" = "Darwin" ]; then
+      write_launchd_plist
+      if launchd_is_loaded; then
+        launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1 || true
+      fi
+      launchctl bootstrap "gui/$(id -u)" "$LAUNCHD_PLIST"
+      launchctl kickstart -k "gui/$(id -u)/$LAUNCHD_LABEL"
+      sleep 2
+      local_pid="$(launchd_print_pid)"
+      if [ -n "$local_pid" ]; then
+        echo "$local_pid" > "$PID_FILE"
+        echo "Bridge started (PID: $local_pid, launchd: $LAUNCHD_LABEL)"
+      else
+        echo "Bridge failed to start via launchd"
+        tail -50 "$LOG_FILE" 2>/dev/null || true
+        exit 1
+      fi
+      exit 0
+    fi
+
+    if is_running; then
+      echo "Bridge already running (PID: $(read_pid))"
+      exit 1
+    fi
+    echo "Starting bridge..."
+    nohup node "$PROJECT_DIR/dist/daemon.mjs" >> "$LOG_FILE" 2>&1 < /dev/null &
+    echo $! > "$PID_FILE"
+    sleep 1
+    if is_running; then
+      echo "Bridge started (PID: $(read_pid))"
+    else
+      echo "Bridge failed to start"
+      tail -50 "$LOG_FILE" 2>/dev/null || true
+      exit 1
+    fi
     ;;
   stop)
-    stop_bridge
+    if [ "$(uname -s)" = "Darwin" ]; then
+      if launchd_is_loaded; then
+        launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL"
+        echo "Bridge stopped"
+      else
+        echo "Bridge is not running"
+      fi
+      rm -f "$PID_FILE"
+      exit 0
+    fi
+
+    if ! is_running; then
+      echo "Bridge is not running"
+      rm -f "$PID_FILE"
+      exit 0
+    fi
+    kill "$(read_pid)"
+    sleep 1
+    if is_running; then
+      kill -9 "$(read_pid)" || true
+    fi
+    rm -f "$PID_FILE"
+    echo "Bridge stopped"
     ;;
   status)
-    show_status
+    if [ "$(uname -s)" = "Darwin" ]; then
+      if launchd_is_loaded; then
+        local_pid="$(launchd_print_pid)"
+        if [ -n "$local_pid" ]; then
+          echo "$local_pid" > "$PID_FILE"
+          echo "Bridge running (PID: $local_pid, launchd: $LAUNCHD_LABEL)"
+        else
+          echo "Bridge registered with launchd but no active PID"
+        fi
+      else
+        echo "Bridge not running"
+        rm -f "$PID_FILE"
+      fi
+      exit 0
+    fi
+
+    if is_running; then
+      echo "Bridge running (PID: $(read_pid))"
+    else
+      echo "Bridge not running"
+      rm -f "$PID_FILE"
+    fi
     ;;
   logs)
-    show_logs "${2:-80}"
+    tail -n "${2:-80}" "$LOG_FILE" 2>/dev/null || true
     ;;
   *)
-    echo "Usage: codex-feishu-bridge {start|stop|status|logs [N]}"
+    echo "Usage: scripts/daemon.sh {start|stop|status|logs [N]}"
     ;;
 esac

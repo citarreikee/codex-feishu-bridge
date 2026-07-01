@@ -3,9 +3,9 @@ import { ensureBridgeDirs, loadConfig } from './config.js';
 import { FeishuBot } from './feishu-bot.js';
 import { StateStore } from './state-store.js';
 
-const FINAL_REPLY_MARKER = '---- Final Answer ----';
+const FINAL_REPLY_MARKER = '━━ Final Answer ━━';
 
-export async function runBridge(): Promise<void> {
+async function main(): Promise<void> {
   const config = loadConfig();
   ensureBridgeDirs(config);
 
@@ -40,6 +40,8 @@ export async function runBridge(): Promise<void> {
     console.log(`[bridge] exit code=${code}`);
   });
 
+  // Keep the daemon alive even if the SDK's long-connection internals temporarily
+  // leave the event loop idle between callbacks.
   setInterval(() => undefined, 45_000);
 
   while (!shuttingDown) {
@@ -47,12 +49,9 @@ export async function runBridge(): Promise<void> {
     if (!inbound) break;
 
     void handleInbound(inbound, feishu, codex).catch(async (error) => {
-      console.error(
-        '[bridge] Failed to handle inbound message:',
-        error instanceof Error ? error.stack || error.message : error,
-      );
+      console.error('[bridge] Failed to handle inbound message:', error instanceof Error ? error.stack || error.message : error);
       try {
-        await feishu.sendStatusCard(inbound.chatId, 'Bridge Execution Failed', toUserError(error), 'danger');
+        await feishu.sendText(inbound.chatId, `桥接执行失败：${toUserError(error)}`);
       } catch (sendError) {
         console.error('[bridge] Failed to send error reply:', sendError);
       }
@@ -70,53 +69,47 @@ async function handleInbound(
 
   if (trimmed === '/new' || trimmed === '/reset') {
     codex.reset(chatId);
-    await feishu.sendStatusCard(chatId, 'Session Reset', 'Cleared the current Codex thread for this chat. The next message will start fresh.', 'success');
+    await feishu.sendText(chatId, '已清空当前 chat 绑定的 Codex 会话，下条消息会新开会话。');
     return;
   }
 
   if (trimmed === '/status') {
-    const threadId = codex.getThreadId(chatId);
-    await feishu.sendStatusCard(
+    const sessionId = codex.getSessionId(chatId);
+    await feishu.sendText(
       chatId,
-      'Bridge Status',
-      threadId
-        ? `Current Codex thread: ${threadId}${codex.isBusy(chatId) ? '\nStatus: busy' : ''}`
-        : 'No Codex thread is currently bound to this chat.',
-      codex.isBusy(chatId) ? 'warning' : 'info',
+      sessionId
+        ? `当前已绑定 Codex 会话：${sessionId}${codex.isBusy(chatId) ? '\n状态：处理中' : ''}`
+        : '当前 chat 还没有绑定 Codex 会话。',
     );
     return;
   }
 
   if (trimmed === '/help') {
-    await feishu.sendStatusCard(
+    await feishu.sendText(
       chatId,
-      'Codex Feishu Bridge',
       [
-        'This is a lightweight Feishu <-> local Codex CLI bridge.',
-        '/new or /reset: clear the current Codex thread for this chat',
-        '/status: show the Codex thread currently bound to this chat',
+        '这是一个轻量 Feishu <-> Codex 桥接。',
+        '/new 或 /reset: 清空当前 chat 的 Codex 会话',
+        '/status: 查看当前 chat 绑定的会话 id',
       ].join('\n'),
-      'info',
     );
     return;
   }
 
   await feishu.onMessageStart(chatId);
-  await feishu.sendRunningStatus(chatId);
   try {
     const result = await codex.runTurn(chatId, trimmed, {
       onAssistantMessage: async (message) => {
-        await feishu.sendAssistantCard(chatId, message);
+        await feishu.sendText(chatId, message);
       },
       onFinal: async () => {
-        await feishu.sendFinalMarker(chatId, FINAL_REPLY_MARKER);
+        await feishu.sendText(chatId, FINAL_REPLY_MARKER);
       },
     });
     if (result.messageCount === 0) {
-      await feishu.sendStatusCard(chatId, 'No Text Output', '(Codex returned no text output in this turn)', 'warning');
-      await feishu.sendFinalMarker(chatId, FINAL_REPLY_MARKER);
+      await feishu.sendText(chatId, '(Codex 本轮没有返回文本输出)');
+      await feishu.sendText(chatId, FINAL_REPLY_MARKER);
     }
-    await feishu.sendPendingOutboxFiles(chatId);
   } finally {
     await feishu.onMessageEnd(chatId);
   }
@@ -126,3 +119,8 @@ function toUserError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
 }
+
+main().catch((error) => {
+  console.error('[bridge] Fatal startup error:', error instanceof Error ? error.stack || error.message : error);
+  process.exit(1);
+});

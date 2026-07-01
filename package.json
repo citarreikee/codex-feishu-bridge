@@ -1,14 +1,13 @@
 {
   "name": "codex-feishu-bridge",
-  "version": "0.1.0",
-  "private": false,
+  "version": "0.2.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.js",
-    "release:local": "node scripts/package-sea.js",
     "dev": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
-    "cli": "node dist/cli.mjs"
+    "package": "bash scripts/package.sh"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0"
@@ -16,7 +15,6 @@
   "devDependencies": {
     "@types/node": "^24.5.0",
     "esbuild": "^0.25.10",
-    "postject": "^1.0.0-alpha.6",
     "tsx": "^4.21.0",
     "typescript": "^5.9.2"
   },
