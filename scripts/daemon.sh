@@ -40,9 +40,15 @@ is_running() {
 write_launchd_plist() {
   local node_bin
   local codex_bin
+  local codex_env_xml
   local launchd_path
   node_bin="$(command -v node)"
-  codex_bin="$(command -v codex)"
+  codex_bin="$(command -v codex || true)"
+  codex_env_xml=""
+  if [ -n "$codex_bin" ]; then
+    codex_env_xml="      <key>CFB_CODEX_EXECUTABLE</key>
+      <string>$codex_bin</string>"
+  fi
   launchd_path="$(dirname "$node_bin"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$LAUNCHD_PLIST" <<EOF
@@ -63,8 +69,7 @@ write_launchd_plist() {
     <dict>
       <key>CFB_HOME</key>
       <string>$BRIDGE_HOME</string>
-      <key>CFB_CODEX_EXECUTABLE</key>
-      <string>$codex_bin</string>
+$codex_env_xml
       <key>PATH</key>
       <string>$launchd_path</string>
     </dict>

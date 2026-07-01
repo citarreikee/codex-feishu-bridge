@@ -2,7 +2,9 @@
 
 这是本机正在运行的 Codex 飞书桥接代码逻辑的源码快照。
 
-它的职责很窄：Feishu bot 收到消息后，把文本转给本地 `codex exec` / `codex exec resume`，再把 Codex 的文本输出发回当前飞书 chat。
+它的职责很窄：Feishu bot 收到消息后，把文本转给本地 Codex，再把 Codex 的文本输出发回当前飞书 chat。
+
+默认使用 `@openai/codex-sdk` 驱动 Codex 线程；如需保留旧行为，可以切换回 `codex exec` / `codex exec resume` CLI 驱动。
 
 ## 设计边界
 
@@ -16,7 +18,17 @@
 
 ## 运行机制
 
-新会话使用：
+默认 SDK 模式使用：
+
+```ts
+const codex = new Codex();
+const thread = codex.startThread(...);
+await thread.runStreamed(...);
+```
+
+已有会话使用 `resumeThread(sessionId, ...)` 继续同一个 Codex thread。
+
+旧 CLI 模式使用：
 
 ```bash
 codex exec --json --skip-git-repo-check -
@@ -36,7 +48,7 @@ Anything you output as assistant text will be sent back into the current Feishu 
 Do not claim that you cannot send messages into the chat when the user is asking you to reply in chat.
 ```
 
-桥接程序解析 Codex JSONL 事件：
+桥接程序解析 Codex 事件：
 
 - `thread.started`：记录 Codex session/thread id
 - `item.completed` 且 `item.type === "agent_message"`：发送文本到飞书
@@ -44,13 +56,15 @@ Do not claim that you cannot send messages into the chat when the user is asking
 - `turn.failed`：本轮失败
 - `error`：按 Codex 临时错误处理，记录日志但不中断
 
+说明：SDK 本身仍会封装本机 Codex CLI，并通过结构化事件和 thread API 管理会话。它不是直接遥控 Codex 桌面端 UI，但比桥接层手写 `spawn codex exec` 更适合作为飞书 bot 的程序化入口。
+
 ## 安装要求
 
 - Node.js 20+
 - npm
 - rsync
-- 本机已安装并可运行 `codex`
-- 本机 Codex 已登录或已配置可用认证
+- 默认 SDK 模式会随依赖安装 `@openai/codex`；如切回 CLI 模式，则本机需已安装并可运行 `codex`
+- 本机 Codex 已登录，或已通过环境/配置提供可用认证
 - 飞书 bot 已开启长连接事件
 
 ## 安装
@@ -95,9 +109,12 @@ CFB_CODEX_WORKDIR=/path/to/workdir
 CFB_FEISHU_DOMAIN=feishu
 CFB_FEISHU_ALLOWED_USERS=
 CFB_FEISHU_REQUIRE_MENTION=true
+CFB_CODEX_DRIVER=sdk
 CFB_CODEX_EXECUTABLE=
 CFB_CODEX_FULL_ACCESS=true
 CFB_CODEX_MODEL=
+CFB_CODEX_API_KEY=
+CFB_CODEX_BASE_URL=
 CFB_CODEX_SANDBOX=workspace-write
 CFB_DEFAULT_SESSION_ID=
 CFB_NO_EVENT_TIMEOUT_MS=600000
@@ -109,9 +126,12 @@ CFB_REPLY_MAX_CHARS=3500
 
 - `CFB_FEISHU_ALLOWED_USERS`：可选，用逗号分隔允许访问的 user open_id 或 chat_id。
 - `CFB_FEISHU_REQUIRE_MENTION=true`：群聊里要求 `@bot` 才响应。
-- `CFB_CODEX_EXECUTABLE`：显式指定 `codex` 可执行文件路径；留空则自动查找。
-- `CFB_CODEX_FULL_ACCESS=true`：传给 Codex `--dangerously-bypass-approvals-and-sandbox`。
-- `CFB_CODEX_MODEL`：可选，传给 Codex `-m`。
+- `CFB_CODEX_DRIVER=sdk`：默认使用 `@openai/codex-sdk`；设为 `cli` 可回退旧 `codex exec` 驱动。
+- `CFB_CODEX_EXECUTABLE`：显式指定 `codex` 可执行文件路径；SDK 模式作为 `codexPathOverride`，CLI 模式作为 spawn 路径。
+- `CFB_CODEX_FULL_ACCESS=true`：SDK 模式使用 `sandboxMode=danger-full-access` 和 `approvalPolicy=never`；CLI 模式传给 Codex `--dangerously-bypass-approvals-and-sandbox`。
+- `CFB_CODEX_MODEL`：可选，指定 Codex 模型。
+- `CFB_CODEX_API_KEY`：可选，传给 SDK；留空则沿用本机 Codex 登录/环境。
+- `CFB_CODEX_BASE_URL`：可选，传给 SDK 的 `baseUrl`。
 - `CFB_CODEX_SANDBOX`：未开启 full access 时可用 `read-only`、`workspace-write` 或 `danger-full-access`。
 - `CFB_DEFAULT_SESSION_ID`：可选，让新 chat 默认接到一个已有 Codex session。
 

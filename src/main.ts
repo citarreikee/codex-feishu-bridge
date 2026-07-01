@@ -1,5 +1,6 @@
-import { CodexCliBridge } from './codex-cli.js';
+import { createCodexBridge } from './codex.js';
 import { ensureBridgeDirs, loadConfig } from './config.js';
+import type { CodexBridge } from './codex-runner.js';
 import { FeishuBot } from './feishu-bot.js';
 import { StateStore } from './state-store.js';
 
@@ -11,7 +12,7 @@ async function main(): Promise<void> {
 
   const store = new StateStore(config.dataDir);
   const feishu = new FeishuBot(config);
-  const codex = new CodexCliBridge(config, store);
+  const codex = createCodexBridge(config, store);
 
   await feishu.start();
 
@@ -62,7 +63,7 @@ async function main(): Promise<void> {
 async function handleInbound(
   inbound: { chatId: string; text: string },
   feishu: FeishuBot,
-  codex: CodexCliBridge,
+  codex: CodexBridge,
 ): Promise<void> {
   const { chatId, text } = inbound;
   const trimmed = text.trim();

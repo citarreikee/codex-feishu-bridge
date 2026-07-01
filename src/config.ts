@@ -12,10 +12,14 @@ export interface Config {
   feishuDomain: 'feishu' | 'lark';
   feishuAllowedUsers: string[];
   feishuRequireMention: boolean;
+  codexDriver: 'sdk' | 'cli';
   codexWorkDir: string;
   codexExecutable: string;
+  codexExecutableOverride?: string;
   codexFullAccess: boolean;
   codexModel?: string;
+  codexApiKey?: string;
+  codexBaseUrl?: string;
   codexSandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   defaultSessionId?: string;
   noEventTimeoutMs: number;
@@ -118,7 +122,9 @@ export function loadConfig(): Config {
   const entries = loadEnvEntries();
   const homeDir = BRIDGE_HOME;
   const feishuDomain = entries.get('CFB_FEISHU_DOMAIN') === 'lark' ? 'lark' : 'feishu';
+  const codexDriver = entries.get('CFB_CODEX_DRIVER') === 'cli' ? 'cli' : 'sdk';
   const codexSandbox = entries.get('CFB_CODEX_SANDBOX');
+  const codexExecutableOverride = entries.get('CFB_CODEX_EXECUTABLE') || undefined;
 
   const config: Config = {
     homeDir,
@@ -130,10 +136,14 @@ export function loadConfig(): Config {
     feishuDomain,
     feishuAllowedUsers: splitCsv(entries.get('CFB_FEISHU_ALLOWED_USERS')),
     feishuRequireMention: toBoolean(entries.get('CFB_FEISHU_REQUIRE_MENTION'), true),
+    codexDriver,
     codexWorkDir: entries.get('CFB_CODEX_WORKDIR') || process.cwd(),
     codexExecutable: resolveCodexExecutable(entries),
+    codexExecutableOverride,
     codexFullAccess: toBoolean(entries.get('CFB_CODEX_FULL_ACCESS'), false),
     codexModel: entries.get('CFB_CODEX_MODEL') || undefined,
+    codexApiKey: entries.get('CFB_CODEX_API_KEY') || undefined,
+    codexBaseUrl: entries.get('CFB_CODEX_BASE_URL') || undefined,
     codexSandbox: codexSandbox === 'read-only' || codexSandbox === 'workspace-write' || codexSandbox === 'danger-full-access'
       ? codexSandbox
       : undefined,
@@ -147,8 +157,12 @@ export function loadConfig(): Config {
     throw new Error(`Configured workdir does not exist: ${config.codexWorkDir}`);
   }
 
-  if (config.codexExecutable !== 'codex' && !fs.existsSync(config.codexExecutable)) {
+  if (config.codexDriver === 'cli' && config.codexExecutable !== 'codex' && !fs.existsSync(config.codexExecutable)) {
     throw new Error(`Configured codex executable does not exist: ${config.codexExecutable}`);
+  }
+
+  if (config.codexExecutableOverride && config.codexExecutableOverride !== 'codex' && !fs.existsSync(config.codexExecutableOverride)) {
+    throw new Error(`Configured codex executable does not exist: ${config.codexExecutableOverride}`);
   }
 
   return config;

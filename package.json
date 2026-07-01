@@ -10,7 +10,8 @@
     "package": "bash scripts/package.sh"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.59.0"
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "@openai/codex-sdk": "^0.142.5"
   },
   "devDependencies": {
     "@types/node": "^24.5.0",

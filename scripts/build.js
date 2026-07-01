@@ -8,6 +8,7 @@ await esbuild.build({
   target: 'node20',
   outfile: 'dist/daemon.mjs',
   external: [
+    '@openai/codex-sdk',
     '@larksuiteoapi/node-sdk',
     'node:child_process',
     'node:events',

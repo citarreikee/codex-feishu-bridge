@@ -2,6 +2,14 @@ import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 
 import type { Config } from './config.js';
+import {
+  buildBridgePrompt,
+  type CodexBridge,
+  type CodexTurnHooks,
+  type CodexTurnResult,
+  NoEventTimeoutError,
+  shouldRetryFresh,
+} from './codex-runner.js';
 import { StateStore } from './state-store.js';
 
 interface CodexEvent {
@@ -14,32 +22,7 @@ interface CodexEvent {
   };
 }
 
-const BRIDGE_INSTRUCTION = [
-  'You are replying through a Feishu bridge.',
-  'Anything you output as assistant text will be sent back into the current Feishu chat.',
-  'Do not claim that you cannot send messages into the chat when the user is asking you to reply in chat.',
-].join('\n');
-
-export interface CodexTurnResult {
-  sessionId: string;
-  text: string;
-  resumed: boolean;
-  messageCount: number;
-}
-
-export interface CodexTurnHooks {
-  onAssistantMessage?: (text: string) => Promise<void>;
-  onFinal?: () => Promise<void>;
-}
-
-class NoEventTimeoutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NoEventTimeoutError';
-  }
-}
-
-export class CodexCliBridge {
+export class CodexCliBridge implements CodexBridge {
   private readonly config: Config;
   private readonly store: StateStore;
   private readonly chains = new Map<string, Promise<unknown>>();
@@ -253,19 +236,8 @@ export class CodexCliBridge {
         void finish();
       });
 
-      child.stdin.write(`${BRIDGE_INSTRUCTION}\n\nUser message:\n${prompt}`);
+      child.stdin.write(buildBridgePrompt(prompt));
       child.stdin.end();
     });
   }
-}
-
-function shouldRetryFresh(error: unknown): boolean {
-  if (error instanceof NoEventTimeoutError) return true;
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return (
-    message.includes('resume') ||
-    message.includes('session') ||
-    message.includes('thread') ||
-    message.includes('exited without turn.completed')
-  );
 }
