@@ -113,6 +113,7 @@ CFB_CODEX_DRIVER=sdk
 CFB_CODEX_EXECUTABLE=
 CFB_CODEX_FULL_ACCESS=true
 CFB_CODEX_MODEL=
+CFB_CODEX_REASONING_EFFORT=
 CFB_CODEX_API_KEY=
 CFB_CODEX_BASE_URL=
 CFB_CODEX_SANDBOX=workspace-write
@@ -130,6 +131,7 @@ CFB_REPLY_MAX_CHARS=3500
 - `CFB_CODEX_EXECUTABLE`：显式指定 `codex` 可执行文件路径；SDK 模式作为 `codexPathOverride`，CLI 模式作为 spawn 路径。
 - `CFB_CODEX_FULL_ACCESS=true`：SDK 模式使用 `sandboxMode=danger-full-access` 和 `approvalPolicy=never`；CLI 模式传给 Codex `--dangerously-bypass-approvals-and-sandbox`。
 - `CFB_CODEX_MODEL`：可选，指定 Codex 模型。
+- `CFB_CODEX_REASONING_EFFORT`：可选，指定思考深度，可用 `minimal`、`low`、`medium`、`high`、`xhigh`。
 - `CFB_CODEX_API_KEY`：可选，传给 SDK；留空则沿用本机 Codex 登录/环境。
 - `CFB_CODEX_BASE_URL`：可选，传给 SDK 的 `baseUrl`。
 - `CFB_CODEX_SANDBOX`：未开启 full access 时可用 `read-only`、`workspace-write` 或 `danger-full-access`。

@@ -177,6 +177,7 @@ export class CodexSdkBridge implements CodexBridge {
 
     return {
       model: this.config.codexModel,
+      modelReasoningEffort: this.config.codexReasoningEffort,
       sandboxMode,
       workingDirectory: this.config.codexWorkDir,
       skipGitRepoCheck: true,

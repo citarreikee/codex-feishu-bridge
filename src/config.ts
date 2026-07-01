@@ -18,6 +18,7 @@ export interface Config {
   codexExecutableOverride?: string;
   codexFullAccess: boolean;
   codexModel?: string;
+  codexReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   codexApiKey?: string;
   codexBaseUrl?: string;
   codexSandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -124,6 +125,7 @@ export function loadConfig(): Config {
   const feishuDomain = entries.get('CFB_FEISHU_DOMAIN') === 'lark' ? 'lark' : 'feishu';
   const codexDriver = entries.get('CFB_CODEX_DRIVER') === 'cli' ? 'cli' : 'sdk';
   const codexSandbox = entries.get('CFB_CODEX_SANDBOX');
+  const codexReasoningEffort = entries.get('CFB_CODEX_REASONING_EFFORT');
   const codexExecutableOverride = entries.get('CFB_CODEX_EXECUTABLE') || undefined;
 
   const config: Config = {
@@ -142,6 +144,9 @@ export function loadConfig(): Config {
     codexExecutableOverride,
     codexFullAccess: toBoolean(entries.get('CFB_CODEX_FULL_ACCESS'), false),
     codexModel: entries.get('CFB_CODEX_MODEL') || undefined,
+    codexReasoningEffort: codexReasoningEffort === 'minimal' || codexReasoningEffort === 'low' || codexReasoningEffort === 'medium' || codexReasoningEffort === 'high' || codexReasoningEffort === 'xhigh'
+      ? codexReasoningEffort
+      : undefined,
     codexApiKey: entries.get('CFB_CODEX_API_KEY') || undefined,
     codexBaseUrl: entries.get('CFB_CODEX_BASE_URL') || undefined,
     codexSandbox: codexSandbox === 'read-only' || codexSandbox === 'workspace-write' || codexSandbox === 'danger-full-access'

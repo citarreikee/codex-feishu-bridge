@@ -85,6 +85,9 @@ export class CodexCliBridge implements CodexBridge {
     if (this.config.codexModel) {
       args.push('-m', this.config.codexModel);
     }
+    if (this.config.codexReasoningEffort) {
+      args.push('--config', `model_reasoning_effort="${this.config.codexReasoningEffort}"`);
+    }
     if (this.config.codexFullAccess) {
       args.push('--dangerously-bypass-approvals-and-sandbox');
     } else if (!sessionId && this.config.codexSandbox) {
