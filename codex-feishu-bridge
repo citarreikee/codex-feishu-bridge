@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/dist/cli.mjs" ]]; then
+  (cd "$SCRIPT_DIR" && npm run build)
+fi
+exec node "$SCRIPT_DIR/dist/cli.mjs" "$@"
